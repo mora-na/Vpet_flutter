@@ -1,0 +1,110 @@
+{
+  "characters": {
+    "mu": {
+      "config": {
+        "canvasSize": {
+          "width": 500,
+          "height": 500
+        },
+        "touchZones": {
+          "head": {
+            "x": 159,
+            "y": 16,
+            "w": 189,
+            "h": 178
+          },
+          "body": {
+            "x": 166,
+            "y": 206,
+            "w": 163,
+            "h": 136
+          },
+          "pinch": {
+            "x": 149,
+            "y": 128,
+            "w": 56,
+            "h": 59
+          }
+        },
+        "duration": {
+          "state": "10",
+          "squat": "20",
+          "boring": "20",
+          "sleep": "20"
+        },
+        "moveGraphs": [
+          "climb.left",
+          "climb.right",
+          "climb.top.left",
+          "climb.top.right",
+          "fall.left",
+          "fall.right",
+          "walk.left",
+          "walk.right",
+          "walk.left.faster",
+          "walk.left.slow",
+          "walk.right.faster",
+          "walk.right.slow",
+          "crawl.left",
+          "crawl.right"
+        ]
+      },
+      "actions": {
+        "default": [
+          {
+            "asset": "assets/mu/frames/default/default_000_125.png",
+            "durationMs": 125
+          },
+          {
+            "asset": "assets/mu/frames/default/default_001_125.png",
+            "durationMs": 125
+          }
+        ],
+        "move": [
+          {
+            "asset": "assets/mu/frames/move/move_000_125.png",
+            "durationMs": 125
+          },
+          {
+            "asset": "assets/mu/frames/move/move_001_125.png",
+            "durationMs": 125
+          },
+          {
+            "asset": "assets/mu/frames/move/move_002_125.png",
+            "durationMs": 125
+          },
+          {
+            "asset": "assets/mu/frames/move/move_003_125.png",
+            "durationMs": 125
+          },
+          {
+            "asset": "assets/mu/frames/move/move_004_125.png",
+            "durationMs": 125
+          },
+          {
+            "asset": "assets/mu/frames/move/move_005_125.png",
+            "durationMs": 125
+          }
+        ],
+        "sleep": [
+          {
+            "asset": "assets/mu/frames/sleep/sleep_000_125.png",
+            "durationMs": 125
+          },
+          {
+            "asset": "assets/mu/frames/sleep/sleep_001_125.png",
+            "durationMs": 125
+          },
+          {
+            "asset": "assets/mu/frames/sleep/sleep_002_125.png",
+            "durationMs": 125
+          },
+          {
+            "asset": "assets/mu/frames/sleep/sleep_003_125.png",
+            "durationMs": 125
+          }
+        ]
+      }
+    }
+  }
+}
