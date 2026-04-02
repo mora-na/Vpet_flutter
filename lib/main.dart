@@ -177,7 +177,7 @@ class _VPetHomePageState extends State<VPetHomePage> {
       _showBubble("想活动一下");
       return;
     }
-    if (_rng.nextDouble() < 0.2 && manifest.actions.containsKey("move")) {
+    if (_rng.nextDouble() < 0.08 && manifest.actions.containsKey("move")) {
       _playAction(manifest, "move", hold: _durationForAction(manifest, "move"));
       return;
     }
@@ -462,9 +462,9 @@ class _PetActorState extends State<PetActor> {
     var durationMs = frame.durationMs;
     if (widget.action == "default" && _frames.length == 2) {
       if (_frameIndex == 0) {
-        durationMs = 4200 + _rng.nextInt(2800);
+        durationMs = 2000 + _rng.nextInt(1000);
       } else {
-        durationMs = 180 + _rng.nextInt(120);
+        durationMs = 35 + _rng.nextInt(25);
       }
     } else if (widget.action == "sleep") {
       durationMs = (durationMs * 4.5).round() + _rng.nextInt(240);
