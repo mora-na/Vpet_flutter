@@ -1,5 +1,6 @@
 import "dart:async";
 import "dart:convert";
+import "dart:io";
 import "dart:math";
 
 import "package:flutter/foundation.dart";
@@ -42,14 +43,17 @@ class VPetHomePage extends StatefulWidget {
 class _VPetHomePageState extends State<VPetHomePage> {
   static const MethodChannel _windowChannel = MethodChannel("vpet/window");
   final _rng = Random();
-  late final Future<CharacterManifest> _manifestFuture =
-      CharacterManifest.load();
+  Future<CharacterManifest> _manifestFuture =
+      CharacterManifest.loadForCharacter("mu");
+  String _characterId = "mu";
 
   Timer? _statusTimer;
   Timer? _behaviorTimer;
   Timer? _actionResetTimer;
   Timer? _bubbleTimer;
   Timer? _movementTimer;
+  Timer? _scheduleTimer;
+  Timer? _dialogTimer;
 
   bool _runtimeStarted = false;
   bool _showDebugZones = false;
@@ -71,15 +75,121 @@ class _VPetHomePageState extends State<VPetHomePage> {
   double _screenMaxX = 1280;
   double _screenMaxY = 800;
   Offset _petVelocity = const Offset(1.35, 0.92);
+  int _windowIndex = 0;
+  List<ScheduleEntry> _scheduleEntries = [];
+  DateTime _lastScheduleTrigger = DateTime.fromMillisecondsSinceEpoch(0);
+  String? _dialogTitle;
+  String? _dialogLineA;
+  String? _dialogLineB;
+  final PetKnowledgeBase _knowledgeBase = PetKnowledgeBase();
+  final PetAiService _aiService = PetAiService();
+  final ScheduleRepository _scheduleRepository = ScheduleRepository();
+
+  @override
+  void initState() {
+    super.initState();
+    _windowChannel.setMethodCallHandler(_handleNativeMethodCall);
+    _loadSchedules();
+    _startScheduleLoop();
+  }
 
   @override
   void dispose() {
+    _windowChannel.setMethodCallHandler(null);
     _statusTimer?.cancel();
     _behaviorTimer?.cancel();
     _actionResetTimer?.cancel();
     _bubbleTimer?.cancel();
     _movementTimer?.cancel();
+    _scheduleTimer?.cancel();
+    _dialogTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _handleNativeMethodCall(MethodCall call) async {
+    if (call.method != "peerInteraction") {
+      return;
+    }
+    final args = (call.arguments as Map?)?.cast<String, dynamic>() ?? const {};
+    final interactionType = (args["type"] as String? ?? "greet").trim();
+    switch (interactionType) {
+      case "schedule_dialog":
+        final title = (args["title"] as String? ?? "").trim();
+        final a = (args["a"] as String? ?? "今天按计划进行。").trim();
+        final b = (args["b"] as String? ?? "收到。").trim();
+        final action = (args["action"] as String? ?? "default").trim();
+        _showDialogueBox(title: title, lineA: a, lineB: b);
+        final manifest = await _manifestFuture;
+        if (!mounted) return;
+        _playAction(manifest, action, hold: const Duration(seconds: 2));
+        return;
+      case "greet":
+      default:
+        _showBubble("另一只：嗨！");
+        final manifest = await _manifestFuture;
+        if (!mounted) return;
+        _playAction(manifest, "move", hold: const Duration(seconds: 2));
+    }
+  }
+
+  bool get _isPrimaryWindow => _windowIndex == 0;
+
+  Future<void> _loadSchedules() async {
+    final entries = await _scheduleRepository.load();
+    if (!mounted) return;
+    setState(() {
+      _scheduleEntries = entries;
+    });
+  }
+
+  void _startScheduleLoop() {
+    _scheduleTimer?.cancel();
+    _scheduleTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+      _handleScheduleTick();
+    });
+  }
+
+  Future<void> _handleScheduleTick() async {
+    if (!mounted || !_isPrimaryWindow || _scheduleEntries.isEmpty) return;
+    final now = DateTime.now();
+    if (now.difference(_lastScheduleTrigger).inSeconds < 45) {
+      return;
+    }
+    final active = _scheduleEntries.where((e) => e.isActiveAt(now)).toList();
+    if (active.isEmpty) return;
+    if (_rng.nextDouble() > 0.35) return;
+    final entry = active[_rng.nextInt(active.length)];
+    await _triggerScheduleEntry(entry);
+    _lastScheduleTrigger = now;
+  }
+
+  Future<void> _triggerScheduleEntry(ScheduleEntry entry) async {
+    final manifest = await _manifestFuture;
+    if (!mounted) return;
+    final desiredAction = entry.actions.isEmpty
+        ? "move"
+        : entry.actions[_rng.nextInt(entry.actions.length)];
+    final action =
+        manifest.actions.containsKey(desiredAction) ? desiredAction : "move";
+    _playAction(manifest, action, hold: const Duration(seconds: 2));
+    final simulator = ScheduleDialogueSimulator(
+      knowledgeBase: _knowledgeBase,
+      aiService: _aiService,
+    );
+    final pair = await simulator.generate(entry);
+    if (!mounted) return;
+    _showDialogueBox(title: entry.title, lineA: pair.a, lineB: pair.b);
+    if (defaultTargetPlatform == TargetPlatform.macOS) {
+      try {
+        await _windowChannel.invokeMethod<void>("broadcastInteraction", {
+          "type": "schedule_dialog",
+          "title": entry.title,
+          "a": pair.a,
+          "b": pair.b,
+          "action": action,
+        });
+      } catch (_) {}
+    }
   }
 
   void _ensureRuntime(CharacterManifest manifest) {
@@ -210,6 +320,27 @@ class _VPetHomePageState extends State<VPetHomePage> {
     });
   }
 
+  void _showDialogueBox({
+    required String title,
+    required String lineA,
+    required String lineB,
+  }) {
+    _dialogTimer?.cancel();
+    setState(() {
+      _dialogTitle = title;
+      _dialogLineA = lineA;
+      _dialogLineB = lineB;
+    });
+    _dialogTimer = Timer(const Duration(seconds: 6), () {
+      if (!mounted) return;
+      setState(() {
+        _dialogTitle = null;
+        _dialogLineA = null;
+        _dialogLineB = null;
+      });
+    });
+  }
+
   void _playAction(
     CharacterManifest manifest,
     String action, {
@@ -311,6 +442,20 @@ class _VPetHomePageState extends State<VPetHomePage> {
             (metrics["screenMaxY"] as num?)?.toDouble() ?? _screenMaxY;
         _windowMetricsReady = true;
       });
+      final idx = await _windowChannel.invokeMethod<int>("windowIndex");
+      if (!mounted) return;
+      final newCharacterId = (idx ?? 0) == 1 ? "lu" : "mu";
+      setState(() {
+        _windowIndex = idx ?? 0;
+        if (_characterId != newCharacterId) {
+          _characterId = newCharacterId;
+          _manifestFuture = CharacterManifest.loadForCharacter(_characterId);
+          _runtimeStarted = false;
+        }
+      });
+      if ((idx ?? 0) == 0) {
+        await _windowChannel.invokeMethod<void>("ensureSecondWindow");
+      }
     } catch (_) {}
   }
 
@@ -326,6 +471,18 @@ class _VPetHomePageState extends State<VPetHomePage> {
       ),
       color: const Color(0xFF121521),
       items: [
+        const PopupMenuItem<String>(
+          value: "chat",
+          child: Text("AI对话"),
+        ),
+        const PopupMenuItem<String>(
+          value: "schedule",
+          child: Text("安排日程"),
+        ),
+        const PopupMenuItem<String>(
+          value: "interactPeer",
+          child: Text("和另一只互动"),
+        ),
         PopupMenuItem<String>(
           value: "toggleZones",
           child: Text(_showDebugZones ? "隐藏触摸区" : "显示触摸区"),
@@ -337,13 +494,58 @@ class _VPetHomePageState extends State<VPetHomePage> {
       ],
     );
     if (!mounted || selected == null) return;
-    if (selected == "toggleZones") {
+    if (selected == "chat") {
+      await _openAiChatDialog();
+    } else if (selected == "schedule") {
+      await _openScheduleDialog();
+    } else if (selected == "interactPeer") {
+      await _triggerPeerInteraction();
+    } else if (selected == "toggleZones") {
       setState(() {
         _showDebugZones = !_showDebugZones;
       });
     } else if (selected == "quit") {
       await _quitApp();
     }
+  }
+
+  Future<void> _openAiChatDialog() async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (_) => AiChatDialog(
+        knowledgeBase: _knowledgeBase,
+        aiService: _aiService,
+      ),
+    );
+  }
+
+  Future<void> _openScheduleDialog() async {
+    final updated = await showDialog<List<ScheduleEntry>>(
+      context: context,
+      barrierDismissible: true,
+      builder: (_) => ScheduleBoardDialog(initial: _scheduleEntries),
+    );
+    if (updated == null || !mounted) return;
+    await _scheduleRepository.save(updated);
+    setState(() {
+      _scheduleEntries = updated;
+    });
+  }
+
+  Future<void> _triggerPeerInteraction() async {
+    _showBubble("我：嗨！");
+    final manifest = await _manifestFuture;
+    if (!mounted) return;
+    _playAction(manifest, "move", hold: const Duration(seconds: 2));
+    if (defaultTargetPlatform != TargetPlatform.macOS) {
+      return;
+    }
+    try {
+      await _windowChannel.invokeMethod<void>("broadcastInteraction", {
+        "type": "greet",
+      });
+    } catch (_) {}
   }
 
   @override
@@ -380,6 +582,39 @@ class _VPetHomePageState extends State<VPetHomePage> {
                     ),
                     child: Text(_bubbleText!,
                         style: const TextStyle(fontSize: 13)),
+                  ),
+                ),
+              if (_dialogTitle != null &&
+                  _dialogLineA != null &&
+                  _dialogLineB != null)
+                Positioned(
+                  left: 20,
+                  right: 20,
+                  bottom: 12,
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.5),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white30),
+                    ),
+                    child: DefaultTextStyle(
+                      style: const TextStyle(fontSize: 12, color: Colors.white),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            _dialogTitle!,
+                            style: const TextStyle(
+                                fontWeight: FontWeight.w600, fontSize: 12),
+                          ),
+                          const SizedBox(height: 4),
+                          Text("Mu-1: ${_dialogLineA!}"),
+                          Text("Mu-2: ${_dialogLineB!}"),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               Center(
@@ -544,10 +779,13 @@ class CharacterManifest {
   final Map<String, List<FrameData>> actions;
   final MuConfig config;
 
-  static Future<CharacterManifest> load() async {
-    final raw = await rootBundle.loadString("assets/mu/manifest.json");
+  static Future<CharacterManifest> loadForCharacter(String characterId) async {
+    final assetPath =
+        characterId == "lu" ? "lu/manifest.json" : "assets/mu/manifest.json";
+    final raw = await rootBundle.loadString(assetPath);
     final data = jsonDecode(raw) as Map<String, dynamic>;
-    final character = (data["characters"] as Map<String, dynamic>)["mu"]
+    final characters = data["characters"] as Map<String, dynamic>;
+    final character = (characters[characterId] ?? characters.values.first)
         as Map<String, dynamic>;
     final config = MuConfig.fromJson(
       character["config"] as Map<String, dynamic>? ?? const {},
@@ -695,5 +933,648 @@ class RectSpec {
     final sx = widgetW / sourceW;
     final sy = widgetH / sourceH;
     return Rect.fromLTWH(x * sx, y * sy, w * sx, h * sy);
+  }
+}
+
+class AiChatDialog extends StatefulWidget {
+  const AiChatDialog({
+    super.key,
+    required this.knowledgeBase,
+    required this.aiService,
+  });
+
+  final PetKnowledgeBase knowledgeBase;
+  final PetAiService aiService;
+
+  @override
+  State<AiChatDialog> createState() => _AiChatDialogState();
+}
+
+class _AiChatDialogState extends State<AiChatDialog> {
+  final TextEditingController _inputController = TextEditingController();
+  final List<ChatMessage> _messages = [];
+  bool _sending = false;
+
+  @override
+  void dispose() {
+    _inputController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _send() async {
+    final text = _inputController.text.trim();
+    if (text.isEmpty || _sending) return;
+    _inputController.clear();
+    setState(() {
+      _messages.add(ChatMessage(role: "user", content: text));
+      _sending = true;
+    });
+    final snippets = await widget.knowledgeBase.search(text, limit: 3);
+    final reply = await widget.aiService.reply(
+      userText: text,
+      knowledgeSnippets: snippets,
+    );
+    if (!mounted) return;
+    setState(() {
+      _messages.add(ChatMessage(role: "assistant", content: reply));
+      _sending = false;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: const Color(0xFF141826),
+      child: SizedBox(
+        width: 420,
+        height: 460,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            children: [
+              const Row(
+                children: [
+                  Text(
+                    "VPet AI 对话",
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Expanded(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.white24),
+                  ),
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(10),
+                    itemCount: _messages.length,
+                    itemBuilder: (context, index) {
+                      final msg = _messages[index];
+                      final isUser = msg.role == "user";
+                      return Align(
+                        alignment: isUser
+                            ? Alignment.centerRight
+                            : Alignment.centerLeft,
+                        child: Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 8),
+                          constraints: const BoxConstraints(maxWidth: 320),
+                          decoration: BoxDecoration(
+                            color: isUser
+                                ? const Color(0xFF2B4C7E)
+                                : Colors.white.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(msg.content),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _inputController,
+                      onSubmitted: (_) => _send(),
+                      decoration: const InputDecoration(
+                        hintText: "输入你的问题...",
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: _sending ? null : _send,
+                    child: Text(_sending ? "发送中" : "发送"),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                "提示: 配置 OPENAI_API_KEY 后将启用在线回复，否则使用本地知识库回复。",
+                style: TextStyle(fontSize: 11, color: Colors.white60),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class ChatMessage {
+  const ChatMessage({required this.role, required this.content});
+
+  final String role;
+  final String content;
+}
+
+class ScheduleEntry {
+  const ScheduleEntry({
+    required this.id,
+    required this.title,
+    required this.startMinuteOfDay,
+    required this.endMinuteOfDay,
+    required this.topics,
+    required this.actions,
+  });
+
+  final String id;
+  final String title;
+  final int startMinuteOfDay;
+  final int endMinuteOfDay;
+  final List<String> topics;
+  final List<String> actions;
+
+  bool isActiveAt(DateTime time) {
+    final minute = time.hour * 60 + time.minute;
+    if (startMinuteOfDay <= endMinuteOfDay) {
+      return minute >= startMinuteOfDay && minute <= endMinuteOfDay;
+    }
+    return minute >= startMinuteOfDay || minute <= endMinuteOfDay;
+  }
+
+  String formatRange() {
+    String fmt(int m) =>
+        "${(m ~/ 60).toString().padLeft(2, "0")}:${(m % 60).toString().padLeft(2, "0")}";
+    return "${fmt(startMinuteOfDay)}-${fmt(endMinuteOfDay)}";
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      "id": id,
+      "title": title,
+      "startMinuteOfDay": startMinuteOfDay,
+      "endMinuteOfDay": endMinuteOfDay,
+      "topics": topics,
+      "actions": actions,
+    };
+  }
+
+  factory ScheduleEntry.fromJson(Map<String, dynamic> json) {
+    return ScheduleEntry(
+      id: (json["id"] as String? ?? "").trim(),
+      title: (json["title"] as String? ?? "未命名日程").trim(),
+      startMinuteOfDay: (json["startMinuteOfDay"] as num?)?.toInt() ?? 0,
+      endMinuteOfDay: (json["endMinuteOfDay"] as num?)?.toInt() ?? 0,
+      topics: ((json["topics"] as List<dynamic>? ?? const []).map((e) => "$e"))
+          .toList(),
+      actions: ((json["actions"] as List<dynamic>? ?? const [])
+          .map((e) => "$e")).toList(),
+    );
+  }
+}
+
+class ScheduleRepository {
+  static const _fileName = "vpet_schedule_entries_v1.json";
+
+  Future<File> _file() async {
+    final home = Platform.environment["HOME"] ?? Directory.current.path;
+    final dir = Directory("$home/Library/Application Support/vpet_flutter");
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    return File("${dir.path}/$_fileName");
+  }
+
+  Future<List<ScheduleEntry>> load() async {
+    final file = await _file();
+    if (!await file.exists()) return const [];
+    final raw = await file.readAsString();
+    if (raw.isEmpty) return const [];
+    try {
+      final list = jsonDecode(raw) as List<dynamic>;
+      return list
+          .map((e) => ScheduleEntry.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<void> save(List<ScheduleEntry> entries) async {
+    final file = await _file();
+    final raw = jsonEncode(entries.map((e) => e.toJson()).toList());
+    await file.writeAsString(raw, flush: true);
+  }
+}
+
+class ScheduleDialoguePair {
+  const ScheduleDialoguePair({required this.a, required this.b});
+
+  final String a;
+  final String b;
+}
+
+class ScheduleDialogueSimulator {
+  const ScheduleDialogueSimulator({
+    required this.knowledgeBase,
+    required this.aiService,
+  });
+
+  final PetKnowledgeBase knowledgeBase;
+  final PetAiService aiService;
+
+  Future<ScheduleDialoguePair> generate(ScheduleEntry entry) async {
+    final topic = entry.topics.isEmpty ? "日常" : entry.topics.first;
+    final snippets = await knowledgeBase.search("性格 $topic", limit: 3);
+    final apiKey = Platform.environment["OPENAI_API_KEY"] ?? "";
+    if (apiKey.isNotEmpty) {
+      final prompt = "根据以下知识库，模拟两只桌宠在日程“${entry.title}”里的简短对话。"
+          "输出严格 JSON: {\"a\":\"...\",\"b\":\"...\"}，每句不超过20字。\n\n知识库:\n${snippets.join("\n")}";
+      final content =
+          await aiService.reply(userText: prompt, knowledgeSnippets: snippets);
+      final pair = _tryParsePair(content);
+      if (pair != null) return pair;
+    }
+    final a = "到 ${entry.title} 时间了，先做 $topic。";
+    const b = "收到，我会按计划执行。";
+    return ScheduleDialoguePair(a: a, b: b);
+  }
+
+  ScheduleDialoguePair? _tryParsePair(String text) {
+    final start = text.indexOf("{");
+    final end = text.lastIndexOf("}");
+    if (start < 0 || end <= start) return null;
+    try {
+      final data =
+          jsonDecode(text.substring(start, end + 1)) as Map<String, dynamic>;
+      final a = (data["a"] as String? ?? "").trim();
+      final b = (data["b"] as String? ?? "").trim();
+      if (a.isEmpty || b.isEmpty) return null;
+      return ScheduleDialoguePair(a: a, b: b);
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+class ScheduleBoardDialog extends StatefulWidget {
+  const ScheduleBoardDialog({super.key, required this.initial});
+
+  final List<ScheduleEntry> initial;
+
+  @override
+  State<ScheduleBoardDialog> createState() => _ScheduleBoardDialogState();
+}
+
+class _ScheduleBoardDialogState extends State<ScheduleBoardDialog> {
+  late final List<ScheduleEntry> _entries = [...widget.initial];
+
+  Future<void> _addEntry() async {
+    final entry = await showDialog<ScheduleEntry>(
+      context: context,
+      builder: (_) => const AddScheduleEntryDialog(),
+    );
+    if (entry == null) return;
+    setState(() {
+      _entries.add(entry);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: const Color(0xFF141826),
+      child: SizedBox(
+        width: 520,
+        height: 500,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            children: [
+              const Row(
+                children: [
+                  Text(
+                    "日程表",
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: _entries.isEmpty
+                    ? const Center(
+                        child: Text("暂无日程，点击“新增”添加。"),
+                      )
+                    : ListView.builder(
+                        itemCount: _entries.length,
+                        itemBuilder: (context, index) {
+                          final entry = _entries[index];
+                          return ListTile(
+                            dense: true,
+                            title: Text(entry.title),
+                            subtitle: Text(
+                              "${entry.formatRange()} | 话题: ${entry.topics.join(" / ")} | 动作: ${entry.actions.join(", ")}",
+                            ),
+                            trailing: IconButton(
+                              onPressed: () {
+                                setState(() {
+                                  _entries.removeAt(index);
+                                });
+                              },
+                              icon: const Icon(Icons.delete_outline),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _addEntry,
+                    icon: const Icon(Icons.add),
+                    label: const Text("新增"),
+                  ),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text("取消"),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: () => Navigator.of(context).pop(_entries),
+                    child: const Text("保存"),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class AddScheduleEntryDialog extends StatefulWidget {
+  const AddScheduleEntryDialog({super.key});
+
+  @override
+  State<AddScheduleEntryDialog> createState() => _AddScheduleEntryDialogState();
+}
+
+class _AddScheduleEntryDialogState extends State<AddScheduleEntryDialog> {
+  final _titleController = TextEditingController();
+  final _startController = TextEditingController(text: "09:00");
+  final _endController = TextEditingController(text: "10:00");
+  final _topicController = TextEditingController(text: "散步,问候");
+  final _actionController =
+      TextEditingController(text: "move,sleep,reserved_chat");
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _startController.dispose();
+    _endController.dispose();
+    _topicController.dispose();
+    _actionController.dispose();
+    super.dispose();
+  }
+
+  int? _parseMinute(String text) {
+    final m = RegExp(r"^(\d{1,2}):(\d{1,2})$").firstMatch(text.trim());
+    if (m == null) return null;
+    final h = int.tryParse(m.group(1)!);
+    final min = int.tryParse(m.group(2)!);
+    if (h == null || min == null) return null;
+    if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+    return h * 60 + min;
+  }
+
+  void _submit() {
+    final title = _titleController.text.trim().isEmpty
+        ? "未命名日程"
+        : _titleController.text.trim();
+    final start = _parseMinute(_startController.text);
+    final end = _parseMinute(_endController.text);
+    if (start == null || end == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("时间格式错误，请用 HH:mm")),
+      );
+      return;
+    }
+    final topics = _topicController.text
+        .split(RegExp(r"[，,]+"))
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    final actions = _actionController.text
+        .split(RegExp(r"[，,]+"))
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    Navigator.of(context).pop(
+      ScheduleEntry(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        title: title,
+        startMinuteOfDay: start,
+        endMinuteOfDay: end,
+        topics: topics.isEmpty ? const ["日常"] : topics,
+        actions: actions.isEmpty ? const ["move"] : actions,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: const Color(0xFF141826),
+      child: SizedBox(
+        width: 420,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  "新增日程",
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _titleController,
+                decoration: const InputDecoration(
+                  labelText: "日程名称",
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _startController,
+                      decoration: const InputDecoration(
+                        labelText: "开始(HH:mm)",
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _endController,
+                      decoration: const InputDecoration(
+                        labelText: "结束(HH:mm)",
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _topicController,
+                decoration: const InputDecoration(
+                  labelText: "话题(逗号分隔)",
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _actionController,
+                decoration: const InputDecoration(
+                  labelText: "动作(逗号分隔，支持预留动作名)",
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text("取消"),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: _submit,
+                    child: const Text("添加"),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class PetKnowledgeBase {
+  String? _doc;
+
+  Future<String> _loadDoc() async {
+    if (_doc != null) return _doc!;
+    _doc = await rootBundle.loadString("assets/knowledge/base.md");
+    return _doc!;
+  }
+
+  Future<List<String>> search(String query, {int limit = 3}) async {
+    final doc = await _loadDoc();
+    final blocks = doc
+        .split(RegExp(r"\n\s*\n"))
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    final keys = query
+        .toLowerCase()
+        .split(RegExp(r"[\s，。！？,.!?;；:：]+"))
+        .where((e) => e.isNotEmpty)
+        .toSet();
+    final scored = <({String text, int score})>[];
+    for (final block in blocks) {
+      final low = block.toLowerCase();
+      var score = 0;
+      for (final k in keys) {
+        if (low.contains(k)) {
+          score += 1;
+        }
+      }
+      if (score > 0) {
+        scored.add((text: block, score: score));
+      }
+    }
+    scored.sort((a, b) => b.score.compareTo(a.score));
+    return scored.take(limit).map((e) => e.text).toList();
+  }
+}
+
+class PetAiService {
+  Future<String> reply({
+    required String userText,
+    required List<String> knowledgeSnippets,
+  }) async {
+    final contextText = knowledgeSnippets.isEmpty
+        ? "无匹配知识片段。"
+        : knowledgeSnippets.join("\n\n---\n\n");
+    final apiKey = Platform.environment["OPENAI_API_KEY"] ?? "";
+    if (apiKey.isEmpty) {
+      if (knowledgeSnippets.isEmpty) {
+        return "我暂时没在本地知识库找到相关内容。你可以先补充知识库文档。";
+      }
+      return "我先基于本地知识库回答:\n\n$contextText";
+    }
+
+    final baseUrl =
+        Platform.environment["OPENAI_BASE_URL"] ?? "https://api.openai.com/v1";
+    final model = Platform.environment["OPENAI_MODEL"] ?? "gpt-4o-mini";
+    final uri = Uri.parse("$baseUrl/chat/completions");
+    final client = HttpClient();
+    try {
+      final req = await client.postUrl(uri);
+      req.headers.set(HttpHeaders.authorizationHeader, "Bearer $apiKey");
+      req.headers.set(HttpHeaders.contentTypeHeader, "application/json");
+      final body = jsonEncode({
+        "model": model,
+        "temperature": 0.5,
+        "messages": [
+          {"role": "system", "content": "你是桌宠助手。优先使用提供的知识库内容，回答简洁、可执行。"},
+          {
+            "role": "user",
+            "content": "知识库:\n$contextText\n\n用户问题:\n$userText",
+          },
+        ],
+      });
+      req.add(utf8.encode(body));
+      final resp = await req.close();
+      final text = await utf8.decoder.bind(resp).join();
+      if (resp.statusCode < 200 || resp.statusCode >= 300) {
+        return "AI 请求失败(${resp.statusCode})，已回退本地知识库:\n$contextText";
+      }
+      final data = jsonDecode(text) as Map<String, dynamic>;
+      final choices = data["choices"] as List<dynamic>? ?? const [];
+      if (choices.isEmpty) {
+        return "AI 返回为空，已回退本地知识库:\n$contextText";
+      }
+      final message =
+          choices.first["message"] as Map<String, dynamic>? ?? const {};
+      final content = (message["content"] as String? ?? "").trim();
+      if (content.isEmpty) {
+        return "AI 返回为空文本，已回退本地知识库:\n$contextText";
+      }
+      return content;
+    } catch (_) {
+      return "AI 请求异常，已回退本地知识库:\n$contextText";
+    } finally {
+      client.close(force: true);
+    }
   }
 }

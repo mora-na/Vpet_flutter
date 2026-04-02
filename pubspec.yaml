@@ -22,3 +22,5 @@ flutter:
     - assets/mu/frames/default/
     - assets/mu/frames/move/
     - assets/mu/frames/sleep/
+    - assets/knowledge/base.md
+    - lu/

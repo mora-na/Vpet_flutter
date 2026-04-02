@@ -3,29 +3,33 @@ import FlutterMacOS
 
 class MainFlutterWindow: NSWindow {
   private let windowChannelName = "vpet/window"
+  private static var channelRegistry: [ObjectIdentifier: FlutterMethodChannel] = [:]
 
   override func awakeFromNib() {
+    bootstrapDesktopPetWindow()
+    super.awakeFromNib()
+  }
+
+  func bootstrapDesktopPetWindow(initialOrigin: NSPoint? = nil) {
     let flutterViewController = FlutterViewController()
     flutterViewController.backgroundColor = NSColor.clear
     flutterViewController.view.wantsLayer = true
     flutterViewController.view.layer?.isOpaque = false
     flutterViewController.view.layer?.backgroundColor = NSColor.clear.cgColor
 
-    let windowFrame = self.frame
+    let frame = self.frame
     self.contentViewController = flutterViewController
-    self.setFrame(windowFrame, display: true)
+    self.setFrame(frame, display: true)
     self.contentView?.wantsLayer = true
     self.contentView?.layer?.isOpaque = false
     self.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
-    configureDesktopPetWindow()
-    setupWindowChannel(flutterViewController: flutterViewController)
 
     RegisterGeneratedPlugins(registry: flutterViewController)
-
-    super.awakeFromNib()
+    configureDesktopPetWindow(initialOrigin: initialOrigin)
+    setupWindowChannel(flutterViewController: flutterViewController)
   }
 
-  private func configureDesktopPetWindow() {
+  private func configureDesktopPetWindow(initialOrigin: NSPoint? = nil) {
     isOpaque = false
     backgroundColor = NSColor.clear
     alphaValue = 1.0
@@ -40,7 +44,11 @@ class MainFlutterWindow: NSWindow {
     styleMask.remove(.miniaturizable)
     styleMask.remove(.closable)
     setContentSize(NSSize(width: 280, height: 280))
-    center()
+    if let origin = initialOrigin {
+      setFrameOrigin(clampOrigin(origin))
+    } else {
+      center()
+    }
   }
 
   private func activeScreenVisibleFrame() -> NSRect {
@@ -64,6 +72,7 @@ class MainFlutterWindow: NSWindow {
     let channel = FlutterMethodChannel(
       name: windowChannelName,
       binaryMessenger: flutterViewController.engine.binaryMessenger)
+    MainFlutterWindow.channelRegistry[ObjectIdentifier(self)] = channel
     channel.setMethodCallHandler { [weak self] call, result in
       guard let self else {
         result(FlutterError(code: "window_unavailable", message: nil, details: nil))
@@ -103,9 +112,28 @@ class MainFlutterWindow: NSWindow {
           "screenMaxX": visible.maxX,
           "screenMaxY": visible.maxY,
         ])
+      case "windowIndex":
+        let windows = NSApp.windows.compactMap { $0 as? MainFlutterWindow }
+          .sorted { $0.windowNumber < $1.windowNumber }
+        let idx = windows.firstIndex { $0 == self } ?? 0
+        result(idx)
+      case "ensureSecondWindow":
+        (NSApp.delegate as? AppDelegate)?.ensureSecondPetWindow()
+        result(nil)
+      case "broadcastInteraction":
+        let args = call.arguments as? [String: Any] ?? [:]
+        self.broadcastToPeerWindows(arguments: args)
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
+    }
+  }
+
+  private func broadcastToPeerWindows(arguments: [String: Any]) {
+    let sender = ObjectIdentifier(self)
+    for (id, channel) in MainFlutterWindow.channelRegistry where id != sender {
+      channel.invokeMethod("peerInteraction", arguments: arguments)
     }
   }
 }
