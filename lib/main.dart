@@ -1494,6 +1494,7 @@ class PetKnowledgeBase {
         .map((e) => e.trim())
         .where((e) => e.isNotEmpty)
         .toList();
+    final memoryMode = _isMemoryQuery(query);
     final keys = query
         .toLowerCase()
         .split(RegExp(r"[\s，。！？,.!?;；:：]+"))
@@ -1502,18 +1503,73 @@ class PetKnowledgeBase {
     final scored = <({String text, int score})>[];
     for (final block in blocks) {
       final low = block.toLowerCase();
+      final isTimeline = _isTimelineBlock(block);
       var score = 0;
       for (final k in keys) {
         if (low.contains(k)) {
           score += 1;
         }
       }
+      if (isTimeline && !memoryMode) {
+        score -= 2;
+      }
+      if (isTimeline && memoryMode) {
+        score += 3;
+      }
       if (score > 0) {
-        scored.add((text: block, score: score));
+        final text = isTimeline && memoryMode
+            ? _extractTimelineMatches(block, keys)
+            : block;
+        scored.add((text: text, score: score));
       }
     }
     scored.sort((a, b) => b.score.compareTo(a.score));
     return scored.take(limit).map((e) => e.text).toList();
+  }
+
+  bool _isTimelineBlock(String block) {
+    final low = block.toLowerCase();
+    return low.contains("时间线") ||
+        block.contains("✅") ||
+        RegExp(r"20\d{2}").hasMatch(block);
+  }
+
+  bool _isMemoryQuery(String query) {
+    final low = query.toLowerCase();
+    const keys = [
+      "时间线",
+      "回忆",
+      "过往",
+      "以前",
+      "当时",
+      "哪年",
+      "哪天",
+      "什么时候",
+      "历史",
+      "事件",
+      "记得",
+      "timeline",
+      "history",
+      "memory",
+    ];
+    if (keys.any(low.contains)) return true;
+    return RegExp(r"20\d{2}").hasMatch(low);
+  }
+
+  String _extractTimelineMatches(String block, Set<String> keys) {
+    final lines =
+        block.split("\n").map((e) => e.trim()).where((e) => e.isNotEmpty);
+    final matched = <String>[];
+    for (final line in lines) {
+      final low = line.toLowerCase();
+      if (keys.any((k) => low.contains(k))) {
+        matched.add(line);
+      }
+    }
+    if (matched.isEmpty) {
+      return lines.take(6).join("\n");
+    }
+    return matched.take(8).join("\n");
   }
 }
 
