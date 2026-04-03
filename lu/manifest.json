@@ -1,0 +1,50 @@
+{
+  "characters": {
+    "lu": {
+      "config": {
+        "canvasSize": {
+          "width": 500,
+          "height": 500
+        },
+        "touchZones": {
+          "head": {
+            "x": 159,
+            "y": 16,
+            "w": 189,
+            "h": 178
+          },
+          "body": {
+            "x": 166,
+            "y": 206,
+            "w": 163,
+            "h": 136
+          },
+          "pinch": {
+            "x": 149,
+            "y": 128,
+            "w": 56,
+            "h": 59
+          }
+        },
+        "duration": {
+          "state": "10",
+          "sleep": "20",
+          "boring": "20"
+        },
+        "moveGraphs": []
+      },
+      "actions": {
+        "default": [
+          {
+            "asset": "lu/default_0.png",
+            "durationMs": 125
+          },
+          {
+            "asset": "lu/default_1.png",
+            "durationMs": 125
+          }
+        ]
+      }
+    }
+  }
+}
